@@ -1,0 +1,25 @@
+[project]
+name = "noble-turing"
+version = "0.1.0"
+description = "MacBook Model Lab and ONNX Export Service"
+dependencies = [
+    "fastapi>=0.100.0",
+    "uvicorn>=0.22.0",
+    "pydantic-settings>=2.0.0",
+    "pydantic>=2.0.0",
+    "xgboost>=1.7.5",
+    "catboost>=1.2.0",
+    "onnx>=1.14.0",
+    "onnxruntime>=1.15.0",
+    "onnxmltools>=1.11.2",
+    "skl2onnx>=1.14.1",
+    "torch>=2.0.0",
+    "transformers>=4.30.0",
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+    "python-multipart>=0.0.6",
+    "scikit-learn>=1.2.0"
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
