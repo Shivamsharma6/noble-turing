@@ -1,4 +1,5 @@
 import os
+import json
 # Set test database path before importing app to avoid downloading FinBERT model
 os.environ["DATABASE_PATH"] = "test_news_cache.db"
 
@@ -155,6 +156,39 @@ def test_capabilities_authenticated():
 def test_export_package_unauthenticated_blocked():
     response = client.post("/api/v1/export_artha_package")
     assert response.status_code == 401
+
+def test_validate_onnx_parity_endpoint_400(tmp_path, monkeypatch):
+    monkeypatch.setenv("MACBOOK_API_KEY", "my-secret")
+    get_settings.cache_clear()
+    
+    # We mock the models directory settings
+    import app.main
+    original_models_dir = app.main.settings.models_dir
+    app.main.settings.models_dir = str(tmp_path)
+    
+    model_id = "m_endpoint_no_onnx"
+    save_dir = os.path.join(str(tmp_path), model_id)
+    os.makedirs(save_dir, exist_ok=True)
+    
+    with open(os.path.join(save_dir, "metadata.json"), "w") as f:
+        json.dump({
+            "model_id": model_id,
+            "model_type": "tabular",
+            "model_family": "xgboost",
+            "feature_schema_hash": "feat_h",
+            "feature_columns": ["f0"]
+        }, f)
+        
+    try:
+        response = client.post(
+            "/api/v1/validate_onnx_parity",
+            data={"model_id": model_id},
+            headers={"X-API-Key": "my-secret"}
+        )
+        assert response.status_code == 400
+        assert response.json()["error_message"] == "ONNX model file not found"
+    finally:
+        app.main.settings.models_dir = original_models_dir
 
 @pytest.fixture(scope="session", autouse=True)
 def cleanup():

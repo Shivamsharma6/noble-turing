@@ -48,6 +48,9 @@ def export_and_verify_onnx(
             tolerance = ONNX_PARITY_TOLERANCE
 
     save_dir = os.path.join(models_dir, model_id)
+    onnx_path = os.path.join(save_dir, "model.onnx")
+    if os.path.exists(onnx_path):
+        return verify_existing_onnx(model_id, models_dir, tolerance)
 
     # Read metadata
     metadata_path = os.path.join(save_dir, "metadata.json")
@@ -346,3 +349,98 @@ def _check_parity(
             "failed",
             f"ONNX parity check failed: max diff {max_diff:.2e} exceeds tolerance {tolerance:.2e}",
         )
+
+def verify_existing_onnx(
+    model_id: str,
+    models_dir: str,
+    tolerance: Optional[float] = None
+) -> Tuple[str, str, Optional[str]]:
+    """Verify parity of an existing ONNX model against Python model using validation samples.
+    
+    Does NOT export or convert anything; only loads the existing ONNX model and validation samples.
+    """
+    if tolerance is None:
+        try:
+            settings = get_settings()
+            tolerance = settings.onnx_parity_tolerance
+        except Exception:
+            tolerance = ONNX_PARITY_TOLERANCE
+            
+    save_dir = os.path.join(models_dir, model_id)
+    metadata_path = os.path.join(save_dir, "metadata.json")
+    if not os.path.exists(metadata_path):
+        return "failed", "unchecked", "metadata.json not found"
+        
+    with open(metadata_path, "r") as f:
+        metadata = json.load(f)
+        
+    onnx_path = os.path.join(save_dir, "model.onnx")
+    if not os.path.exists(onnx_path):
+        return "failed", "unchecked", "ONNX model file not found"
+        
+    model_type = metadata.get("model_type")
+    if model_type == "tabular":
+        model_pkl_path = os.path.join(save_dir, "model.pkl")
+        if not os.path.exists(model_pkl_path):
+            return "failed", "unchecked", "model.pkl not found"
+        with open(model_pkl_path, "rb") as f:
+            model = pickle.load(f)
+        feature_names_in = getattr(model, "feature_names_in_", None)
+        n_features = len(feature_names_in) if feature_names_in is not None else len(metadata.get("feature_columns", []))
+        
+        dummy_input, real_samples_used = _get_validation_samples(save_dir, n_features)
+        py_pred = model.predict_proba(dummy_input)[:, 1]
+        
+        ort_sess = ort.InferenceSession(onnx_path)
+        input_name = ort_sess.get_inputs()[0].name
+        onnx_outputs = ort_sess.run(None, {input_name: dummy_input})
+        probs_output = onnx_outputs[1]
+        if isinstance(probs_output, np.ndarray):
+            onnx_pred = probs_output[:, 1]
+        elif isinstance(probs_output, list) and len(probs_output) > 0 and isinstance(probs_output[0], dict):
+            onnx_pred = np.array([d[1] for d in probs_output])
+        else:
+            onnx_pred = np.array([list(d.values())[1] for d in probs_output])
+            
+        return _check_parity(py_pred, onnx_pred, save_dir, tolerance, real_samples_used)
+        
+    elif model_type == "sequence":
+        seq_len = metadata["sequence_length"]
+        n_features = metadata["num_features"]
+        
+        from app.models_lab.sequence import (
+            Simple1DCNN, MiniRocketFeatureExtractor, InceptionTime, TCN, ResNetTS
+        )
+        model_classes = [
+            ("Simple1DCNN", Simple1DCNN),
+            ("MiniRocketFeatureExtractor", MiniRocketFeatureExtractor),
+            ("InceptionTime", InceptionTime),
+            ("TCN", TCN),
+            ("ResNetTS", ResNetTS),
+        ]
+        model = None
+        for name, cls in model_classes:
+            try:
+                model = cls(seq_len, n_features)
+                model.load_state_dict(
+                    torch.load(os.path.join(save_dir, "model.pt"), weights_only=True)
+                )
+                model.eval()
+                break
+            except Exception:
+                model = None
+                continue
+        if model is None:
+            return "failed", "unchecked", "Could not load any known PyTorch model architecture"
+            
+        dummy_input, real_samples_used = _get_validation_samples(save_dir, n_features, seq_len=seq_len)
+        dummy_input_torch = torch.tensor(dummy_input, dtype=torch.float32)
+        with torch.no_grad():
+            py_pred = model(dummy_input_torch).numpy().flatten()
+            
+        ort_sess = ort.InferenceSession(onnx_path)
+        onnx_pred = ort_sess.run(None, {"input": dummy_input})[0].flatten()
+        
+        return _check_parity(py_pred, onnx_pred, save_dir, tolerance, real_samples_used)
+    else:
+        return "unsupported", "unchecked", f"Unsupported model_type: {model_type}"

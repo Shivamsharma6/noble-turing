@@ -21,7 +21,7 @@ from app.database import init_db, get_db_connection
 from app.models_lab.finbert import annotate_news_batch
 from app.models_lab.tabular import train_tabular_pipeline
 from app.models_lab.sequence import train_sequence_pipeline
-from app.models_lab.onnx_utils import export_and_verify_onnx
+from app.models_lab.onnx_utils import export_and_verify_onnx, verify_existing_onnx
 
 # Import new Artha compatible modules
 from app.audit import log_audit_record, redact_secrets
@@ -453,7 +453,41 @@ async def validate_onnx_parity_endpoint(
     request: Request,
     model_id: str = Form(...)
 ):
-    return await export_onnx_endpoint(request, model_id)
+    save_dir = os.path.join(settings.models_dir, model_id)
+    metadata_path = os.path.join(save_dir, "metadata.json")
+
+    if not os.path.exists(metadata_path):
+        return JSONResponse(
+            status_code=404,
+            content={
+                "model_id": model_id,
+                "onnx_export_status": "failed",
+                "onnx_parity_status": "unchecked",
+                "error_message": "metadata.json not found",
+            }
+        )
+
+    onnx_status, parity_status, error_msg = verify_existing_onnx(
+        model_id, settings.models_dir
+    )
+
+    if onnx_status == "failed" and error_msg == "ONNX model file not found":
+        return JSONResponse(
+            status_code=400,
+            content={
+                "model_id": model_id,
+                "onnx_export_status": onnx_status,
+                "onnx_parity_status": parity_status,
+                "error_message": error_msg,
+            }
+        )
+
+    return {
+        "model_id": model_id,
+        "onnx_export_status": "success" if onnx_status == "success" else onnx_status,
+        "onnx_parity_status": parity_status,
+        "error_message": error_msg,
+    }
 
 # ---------------------------------------------------------------------------
 # Artha Compatible Packages Export

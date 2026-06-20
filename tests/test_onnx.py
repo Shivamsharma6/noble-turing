@@ -161,3 +161,25 @@ def test_onnx_parity_missing_validation_samples(tmp_path):
         report = json.load(f)
     assert report["passed"] is False
     assert report["real_validation_samples"] is False
+
+def test_verify_existing_onnx_missing_file(tmp_path):
+    from app.models_lab.onnx_utils import verify_existing_onnx
+    import json
+    
+    model_id = "m_no_onnx"
+    save_dir = os.path.join(str(tmp_path), model_id)
+    os.makedirs(save_dir, exist_ok=True)
+    
+    with open(os.path.join(save_dir, "metadata.json"), "w") as f:
+        json.dump({
+            "model_id": model_id,
+            "model_type": "tabular",
+            "model_family": "xgboost",
+            "feature_schema_hash": "feat_h",
+            "feature_columns": ["f0"]
+        }, f)
+        
+    status, parity, error_msg = verify_existing_onnx(model_id, str(tmp_path))
+    assert status == "failed"
+    assert parity == "unchecked"
+    assert error_msg == "ONNX model file not found"
