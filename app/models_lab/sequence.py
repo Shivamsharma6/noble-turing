@@ -486,15 +486,29 @@ def train_sequence_pipeline(
     with open(os.path.join(save_dir, "calibration.json"), "w") as f:
         json.dump(calibration, f, indent=2)
 
+    # Save validation samples
+    val_samples_path = os.path.join(save_dir, "validation_samples.npy")
+    X_hold_np = X_hold.numpy().astype(np.float32)
+    np.save(val_samples_path, X_hold_np)
+
     metadata = {
         "model_id": model_id,
-        "experiment_id": config["experiment_id"],
+        "experiment_id": config.get("experiment_id"),
+        "dataset_id": config.get("dataset_id"),
         "model_family": actual_family,
         "model_type": "sequence",
-        "sequence_schema_hash": config["sequence_schema_hash"],
+        "feature_schema_hash": config.get("feature_schema_hash"),
+        "sequence_schema_hash": config.get("sequence_schema_hash"),
         "label_definition": label_col,
         "sequence_length": seq_len,
         "num_features": num_features,
+        "feature_columns": feature_cols, # Exact column order
+        "train_split": train_split,
+        "holdout_split": holdout_split,
+        "target_stop_assumptions": config.get("target_stop_assumptions"),
+        "cost_assumptions": config.get("cost_assumptions"),
+        "broker_limits": config.get("broker_limits"),
+        "broker_limit_policy": config.get("broker_limit_policy")
     }
     with open(os.path.join(save_dir, "metadata.json"), "w") as f:
         json.dump(metadata, f, indent=2)
@@ -502,6 +516,7 @@ def train_sequence_pipeline(
     file_paths = {
         "model": model_path,
         "metadata": os.path.join(save_dir, "metadata.json"),
+        "validation_samples": val_samples_path
     }
 
     return metrics, file_paths

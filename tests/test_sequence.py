@@ -50,6 +50,7 @@ def test_sequence_training(tmp_path):
     assert os.path.exists(
         os.path.join(model_dir, "m_seq1", "calibration.json")
     )
+    assert os.path.exists(os.path.join(model_dir, "m_seq1", "validation_samples.npy"))
 
 
 def test_sequence_unknown_split_rejected(tmp_path):
