@@ -63,3 +63,35 @@ def test_export_package_onnx_blocked_on_parity_failure(tmp_path):
         appr = json.load(f)
     assert appr["status"] == "blocked"
     assert "onnx_parity_failed" in appr["errors"]
+
+def test_package_metadata_compliance(tmp_path):
+    model_dir = str(tmp_path / "models")
+    model_id = "m_test_compliance"
+    save_dir = os.path.join(model_dir, model_id)
+    os.makedirs(save_dir, exist_ok=True)
+    
+    with open(os.path.join(save_dir, "metadata.json"), "w") as f:
+        json.dump({
+            "model_id": model_id,
+            "model_family": "xgboost",
+            "model_type": "tabular",
+            "feature_schema_hash": "feat_h",
+            "feature_columns": ["f0"]
+        }, f)
+        
+    with open(os.path.join(save_dir, "thresholds.json"), "w") as f:
+        json.dump({"threshold": 0.55}, f)
+        
+    export_artha_package(model_id, "mac_api", model_dir)
+    
+    with open(os.path.join(save_dir, "model_package.json"), "r") as f:
+        pkg = json.load(f)
+    assert pkg["backend"] == "mac_api"
+    
+    with open(os.path.join(save_dir, "thresholds.json"), "r") as f:
+        thresh = json.load(f)
+    assert thresh["threshold"] == 0.55
+    assert thresh["tabular_score"] == 0.55
+    assert thresh["time_series_score"] == 0.55
+    assert thresh["final_score"] == 0.55
+    assert "scoring_formula" in thresh

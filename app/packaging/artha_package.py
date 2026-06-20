@@ -48,6 +48,7 @@ def export_artha_package(
         "model_package_id": f"pkg_{model_id}",
         "model_id": model_id,
         "package_type": package_type,
+        "backend": package_type,
         "status": "blocked" if parity_failed else "completed",
         "created_at": datetime.now(timezone.utc).isoformat()
     }
@@ -97,9 +98,36 @@ def export_artha_package(
     
     # 5. thresholds.json
     thresh_path = os.path.join(save_dir, "thresholds.json")
-    if not os.path.exists(thresh_path):
-        with open(thresh_path, "w") as f:
-            json.dump({"threshold": 0.5}, f, indent=2)
+    current_threshold = 0.5
+    current_data = {}
+    if os.path.exists(thresh_path):
+        try:
+            with open(thresh_path, "r") as f:
+                current_data = json.load(f)
+                current_threshold = current_data.get("threshold", 0.5)
+        except Exception:
+            pass
+            
+    is_sequence = metadata.get("model_type") == "sequence"
+    default_formula = "1.0 * time_series_score" if is_sequence else "0.9 * tabular_score + 0.1 * news_score"
+    default_weights = {
+        "tabular_score": 0.0 if is_sequence else 0.9,
+        "news_score": 0.0 if is_sequence else 0.1,
+        "time_series_score": 1.0 if is_sequence else 0.0
+    }
+    
+    thresholds_data = {
+        "threshold": current_threshold,
+        "tabular_score": current_data.get("tabular_score", current_threshold),
+        "time_series_score": current_data.get("time_series_score", current_threshold),
+        "final_score": current_data.get("final_score", current_threshold),
+        "scoring_formula": current_data.get("scoring_formula", default_formula),
+        "weights": current_data.get("weights", default_weights),
+        "threshold_source": current_data.get("threshold_source", "thresholds.json")
+    }
+    
+    with open(thresh_path, "w") as f:
+        json.dump(thresholds_data, f, indent=2)
     exported_files.append("thresholds.json")
     
     if package_type == "onnx":
