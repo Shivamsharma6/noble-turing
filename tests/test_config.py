@@ -3,6 +3,7 @@ from app.config import get_settings
 
 def test_settings_load(monkeypatch):
     monkeypatch.setenv("MACBOOK_API_KEY", "test-token")
+    monkeypatch.delenv("DATABASE_PATH", raising=False)
     get_settings.cache_clear()
     settings = get_settings()
     assert settings.macbook_api_key == "test-token"
@@ -10,6 +11,7 @@ def test_settings_load(monkeypatch):
 
 def test_settings_default(monkeypatch):
     monkeypatch.delenv("MACBOOK_API_KEY", raising=False)
+    monkeypatch.delenv("DATABASE_PATH", raising=False)
     get_settings.cache_clear()
     settings = get_settings()
     assert settings.macbook_api_key == "default-secret-token"
