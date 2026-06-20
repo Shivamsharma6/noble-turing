@@ -7,34 +7,35 @@ def get_db_connection(db_path: str) -> sqlite3.Connection:
 
 def init_db(db_path: str):
     conn = get_db_connection(db_path)
-    cursor = conn.cursor()
-    
-    # News sentiment annotation cache table
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS news_annotations (
-        dedupe_hash TEXT PRIMARY KEY,
-        model_id TEXT,
-        sentiment_label TEXT,
-        sentiment_score REAL,
-        positive_score REAL,
-        negative_score REAL,
-        neutral_score REAL,
-        annotated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-    """)
-    
-    # Background training job tracking table
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS jobs (
-        model_id TEXT PRIMARY KEY,
-        status TEXT,
-        model_family TEXT,
-        model_type TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        completed_at TIMESTAMP,
-        metrics_json TEXT,
-        error_message TEXT
-    );
-    """)
-    conn.commit()
-    conn.close()
+    try:
+        cursor = conn.cursor()
+        # News sentiment annotation cache table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS news_annotations (
+            dedupe_hash TEXT PRIMARY KEY,
+            model_id TEXT,
+            sentiment_label TEXT,
+            sentiment_score REAL,
+            positive_score REAL,
+            negative_score REAL,
+            neutral_score REAL,
+            annotated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+        
+        # Background training job tracking table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS jobs (
+            model_id TEXT PRIMARY KEY,
+            status TEXT,
+            model_family TEXT,
+            model_type TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            completed_at TIMESTAMP,
+            metrics_json TEXT,
+            error_message TEXT
+        );
+        """)
+        conn.commit()
+    finally:
+        conn.close()
