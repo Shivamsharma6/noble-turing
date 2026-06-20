@@ -203,3 +203,9 @@ noble-turing/
   ├── pyproject.toml            # uv configuration
   └── tests/                    # Unit & integration test suites
 ```
+
+---
+
+## Deployment & Configuration
+
+For full details on environment variables, startup commands, local network (LAN) exposure, and endpoint verification steps, please refer to the [DEPLOYMENT.md](file:///Users/shivamsharma/Documents/antigravity/noble-turing/DEPLOYMENT.md) guide.
