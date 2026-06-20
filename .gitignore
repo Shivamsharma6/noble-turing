@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.venv/
+venv/
+
+# Environment / Data
+.env
+data/
+*.csv
+*.db
+news_cache.db
+
+# Model Artifacts
+models/
+*.pkl
+*.pt
+*.onnx
+*.onnx.data
