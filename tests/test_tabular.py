@@ -163,8 +163,7 @@ def test_tabular_threshold_in_response(tmp_path):
     assert 0.0 <= metrics["threshold"] <= 1.0
 
 
-def test_tabular_lightgbm_fallback(tmp_path, monkeypatch):
-    import json
+def test_tabular_lightgbm_blocker(tmp_path, monkeypatch):
     from app.models_lab import tabular
     monkeypatch.setattr(tabular, "LIGHTGBM_AVAILABLE", False)
 
@@ -187,10 +186,33 @@ def test_tabular_lightgbm_fallback(tmp_path, monkeypatch):
         "model_family": "lightgbm",
     }
 
-    metrics, file_paths = train_tabular_pipeline("m_lgb", config, model_dir)
-    assert "LightGBM not installed. Falling back to xgboost." in metrics["blockers"]
+    with pytest.raises(ValueError, match="LightGBM not installed. Cannot train."):
+        train_tabular_pipeline("m_lgb", config, model_dir)
 
-    # Verify metadata saved "xgboost" as the family since it fell back
-    with open(file_paths["metadata"], "r") as f:
-        meta = json.load(f)
-    assert meta["model_family"] == "xgboost"
+
+def test_tabular_validation_samples_saved(tmp_path):
+    model_dir = str(tmp_path / "models")
+    os.makedirs(model_dir, exist_ok=True)
+
+    df = pd.DataFrame(np.random.rand(100, 3), columns=["feat_0", "feat_1", "feat_2"])
+    df["target"] = np.random.choice([0, 1], size=100)
+    dataset_path = str(tmp_path / "test_val_save.csv")
+    df.to_csv(dataset_path, index=False)
+
+    config = {
+        "experiment_id": "exp_val",
+        "dataset_id": "ds_val",
+        "dataset_uri": dataset_path,
+        "feature_schema_hash": "hash_val",
+        "label_definition": "target",
+        "train_split": {"type": "indices", "values": list(range(80))},
+        "holdout_split": {"type": "indices", "values": list(range(80, 100))},
+        "model_family": "xgboost",
+    }
+
+    metrics, file_paths = train_tabular_pipeline("m_val", config, model_dir)
+    val_path = os.path.join(model_dir, "m_val", "validation_samples.npy")
+    assert os.path.exists(val_path)
+    loaded = np.load(val_path)
+    assert loaded.shape == (20, 3)  # 20 holdout rows, 3 features
+
