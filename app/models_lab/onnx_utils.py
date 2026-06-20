@@ -9,6 +9,23 @@ from typing import Tuple, Dict, Any, Optional
 from app.models_lab.sequence import Simple1DCNN
 from app.config import get_settings, ONNX_PARITY_TOLERANCE
 
+def _get_validation_samples(save_dir: str, n_features: int, seq_len: Optional[int] = None) -> np.ndarray:
+    val_samples_path = os.path.join(save_dir, "validation_samples.npy")
+    if os.path.exists(val_samples_path):
+        try:
+            arr = np.load(val_samples_path)
+            if seq_len is not None:
+                if len(arr.shape) == 3 and arr.shape[1] == seq_len and arr.shape[2] == n_features:
+                    return arr
+            else:
+                if len(arr.shape) == 2 and arr.shape[1] == n_features:
+                    return arr
+        except Exception:
+            pass
+    if seq_len is not None:
+        return np.random.rand(100, seq_len, n_features).astype(np.float32)
+    return np.random.rand(100, n_features).astype(np.float32)
+
 
 def export_and_verify_onnx(
     model_id: str,
@@ -124,7 +141,7 @@ def _export_xgboost(
         f.write(onnx_model.SerializeToString())
 
     # Parity Check
-    dummy_input = np.random.rand(100, n_features).astype(np.float32)
+    dummy_input = _get_validation_samples(save_dir, n_features)
     py_pred = model.predict_proba(dummy_input)[:, 1]
 
     ort_sess = ort.InferenceSession(onnx_path)
@@ -149,7 +166,7 @@ def _export_catboost(
     model.save_model(onnx_path, format="onnx")
 
     n_features = model.n_features_in_
-    dummy_input = np.random.rand(100, n_features).astype(np.float32)
+    dummy_input = _get_validation_samples(save_dir, n_features)
     py_pred = model.predict_proba(dummy_input)[:, 1]
 
     ort_sess = ort.InferenceSession(onnx_path)
@@ -197,7 +214,7 @@ def _export_lightgbm(
         f.write(onnx_model.SerializeToString())
 
     # Parity Check
-    dummy_input = np.random.rand(100, n_features).astype(np.float32)
+    dummy_input = _get_validation_samples(save_dir, n_features)
     py_pred = model.predict_proba(dummy_input)[:, 1]
 
     ort_sess = ort.InferenceSession(onnx_path)
@@ -258,7 +275,8 @@ def _export_sequence(
     if model is None:
         return "failed", "unchecked", "Could not load any known PyTorch model architecture"
 
-    dummy_input_torch = torch.randn(100, seq_len, n_features)
+    dummy_input = _get_validation_samples(save_dir, n_features, seq_len=seq_len)
+    dummy_input_torch = torch.tensor(dummy_input, dtype=torch.float32)
 
     torch.onnx.export(
         model,
@@ -271,7 +289,6 @@ def _export_sequence(
     )
 
     # Parity Check
-    dummy_input = dummy_input_torch.numpy().astype(np.float32)
     with torch.no_grad():
         py_pred = model(dummy_input_torch).numpy().flatten()
 
@@ -290,12 +307,18 @@ def _check_parity(
     """Compare Python and ONNX predictions and write the parity report."""
     diff = np.abs(py_pred - onnx_pred)
     max_diff = float(np.max(diff))
+    mean_diff = float(np.mean(diff))
     parity_passed = max_diff < tolerance
 
     report = {
+        "sample_count": len(py_pred),
+        "max_abs_delta": max_diff,
+        "mean_abs_delta": mean_diff,
+        "passed": parity_passed,
+        "tolerance": tolerance,
+        # backward compatibility:
         "max_absolute_difference": max_diff,
         "parity_passed": parity_passed,
-        "tolerance": tolerance,
         "onnx_output_sample": [float(x) for x in onnx_pred[:5]],
         "py_output_sample": [float(x) for x in py_pred[:5]],
     }

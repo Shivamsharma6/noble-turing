@@ -37,9 +37,15 @@ def test_onnx_export_parity(tmp_path):
     assert parity == "success"
     assert error_msg is None
     assert os.path.exists(os.path.join(model_dir, "m_onnx", "model.onnx"))
-    assert os.path.exists(
-        os.path.join(model_dir, "m_onnx", "onnx_parity_report.json")
-    )
+    report_path = os.path.join(model_dir, "m_onnx", "onnx_parity_report.json")
+    assert os.path.exists(report_path)
+    with open(report_path, "r") as f:
+        rep = json.load(f)
+    assert "sample_count" in rep
+    assert "max_abs_delta" in rep
+    assert "mean_abs_delta" in rep
+    assert "passed" in rep
+    assert "tolerance" in rep
 
 
 def test_onnx_sequence_export_parity(tmp_path):

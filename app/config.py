@@ -8,7 +8,7 @@ os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 from functools import cache
 from pydantic_settings import BaseSettings
 
-ONNX_PARITY_TOLERANCE = 1e-3
+ONNX_PARITY_TOLERANCE = 0.0001
 
 
 class Settings(BaseSettings):
