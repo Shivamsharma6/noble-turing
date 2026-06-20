@@ -5,16 +5,20 @@ os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 
-from functools import lru_cache
+from functools import cache
 from pydantic_settings import BaseSettings
 
+ONNX_PARITY_TOLERANCE = 1e-3
+
+
 class Settings(BaseSettings):
-    macbook_api_key: str = "default-secret-token"
+    macbook_api_key: str
     database_path: str = "news_cache.db"
     models_dir: str = "models"
     data_dir: str = "data"
+    onnx_parity_tolerance: float = ONNX_PARITY_TOLERANCE
 
-@lru_cache()
+
+@cache
 def get_settings() -> Settings:
     return Settings()
-
