@@ -167,11 +167,18 @@ def score_time_series(
             "score_source": "mac_api",
             "model_id": model_id,
             "metadata": {
-                "feature_hash": metadata.get("feature_schema_hash"),
-                "sequence_hash": metadata.get("sequence_schema_hash"),
+                "feature_hash": cand.get("feature_hash"),
+                "sequence_hash": cand.get("sequence_hash"),
                 "paper_only": True,
                 "broker_routed": False,
-                "live_eligible": False
+                "live_eligible": False,
+                "scoring_formula": "1.0 * time_series_score",
+                "weights": {
+                    "tabular_score": 0.0,
+                    "news_score": 0.0,
+                    "time_series_score": 1.0
+                },
+                "threshold_source": "thresholds.json"
             }
         })
         

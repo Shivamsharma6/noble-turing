@@ -48,6 +48,8 @@ def test_score_time_series_success(tmp_path):
                 "snapshot_id": "s1",
                 "dataset_id": "ds_seq",
                 "symbol": "AAPL",
+                "feature_hash": "cf_hash_1",
+                "sequence_hash": "cs_hash_1",
                 "sequence_features": [[0.1, 0.2] for _ in range(10)]
             },
             {
@@ -55,6 +57,8 @@ def test_score_time_series_success(tmp_path):
                 "snapshot_id": "s1",
                 "dataset_id": "ds_seq",
                 "symbol": "MSFT",
+                "feature_hash": "cf_hash_2",
+                "sequence_hash": "cs_hash_2",
                 "sequence_features": [{"t0_f0": 0.5, "t0_f1": 0.3} for _ in range(10)]
             }
         ]
@@ -71,6 +75,10 @@ def test_score_time_series_success(tmp_path):
     assert c1_score["metadata"]["paper_only"] is True
     assert c1_score["metadata"]["broker_routed"] is False
     assert c1_score["metadata"]["live_eligible"] is False
+    assert c1_score["metadata"]["feature_hash"] == "cf_hash_1"
+    assert c1_score["metadata"]["sequence_hash"] == "cs_hash_1"
+    assert c1_score["metadata"]["scoring_formula"] == "1.0 * time_series_score"
+    assert c1_score["metadata"]["weights"]["time_series_score"] == 1.0
     assert 0.0 <= c1_score["time_series_score"] <= 1.0
 
 def test_score_time_series_schema_mismatch(tmp_path):

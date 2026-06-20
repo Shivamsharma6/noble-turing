@@ -46,6 +46,8 @@ def test_score_daily_mover_success(tmp_path):
                 "snapshot_id": "s1",
                 "dataset_id": "ds_tab",
                 "symbol": "AAPL",
+                "feature_hash": "cf_hash_1",
+                "sequence_hash": "cs_hash_1",
                 "features": {"f0": 0.5, "f1": 0.2, "f2": 0.1}
             },
             {
@@ -53,6 +55,8 @@ def test_score_daily_mover_success(tmp_path):
                 "snapshot_id": "s1",
                 "dataset_id": "ds_tab",
                 "symbol": "MSFT",
+                "feature_hash": "cf_hash_2",
+                "sequence_hash": "cs_hash_2",
                 "features": {"f0": 0.8, "f1": None, "f2": 0.9} # missing/None f1
             }
         ]
@@ -70,6 +74,11 @@ def test_score_daily_mover_success(tmp_path):
     assert c1_score["metadata"]["paper_only"] is True
     assert c1_score["metadata"]["broker_routed"] is False
     assert c1_score["metadata"]["live_eligible"] is False
+    assert c1_score["metadata"]["feature_hash"] == "cf_hash_1"
+    assert c1_score["metadata"]["sequence_hash"] == "cs_hash_1"
+    assert c1_score["metadata"]["scoring_formula"] == "0.9 * tabular_score + 0.1 * news_score"
+    assert c1_score["metadata"]["weights"]["tabular_score"] == 0.9
+    assert c1_score["metadata"]["weights"]["news_score"] == 0.1
     assert 0.0 <= c1_score["tabular_score"] <= 1.0
 
 def test_score_daily_mover_schema_mismatch(tmp_path):

@@ -118,11 +118,18 @@ def score_daily_mover(
             "score_source": "mac_api",
             "model_id": model_id,
             "metadata": {
-                "feature_hash": metadata.get("feature_schema_hash"),
-                "sequence_hash": metadata.get("sequence_schema_hash"),
+                "feature_hash": cand.get("feature_hash"),
+                "sequence_hash": cand.get("sequence_hash"),
                 "paper_only": True,
                 "broker_routed": False,
-                "live_eligible": False
+                "live_eligible": False,
+                "scoring_formula": "0.9 * tabular_score + 0.1 * news_score",
+                "weights": {
+                    "tabular_score": 0.9,
+                    "news_score": 0.1,
+                    "time_series_score": 0.0
+                },
+                "threshold_source": "thresholds.json"
             }
         })
         
