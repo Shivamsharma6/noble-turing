@@ -9,22 +9,22 @@ from typing import Tuple, Dict, Any, Optional
 from app.models_lab.sequence import Simple1DCNN
 from app.config import get_settings, ONNX_PARITY_TOLERANCE
 
-def _get_validation_samples(save_dir: str, n_features: int, seq_len: Optional[int] = None) -> np.ndarray:
+def _get_validation_samples(save_dir: str, n_features: int, seq_len: Optional[int] = None) -> Tuple[np.ndarray, bool]:
     val_samples_path = os.path.join(save_dir, "validation_samples.npy")
     if os.path.exists(val_samples_path):
         try:
             arr = np.load(val_samples_path)
             if seq_len is not None:
                 if len(arr.shape) == 3 and arr.shape[1] == seq_len and arr.shape[2] == n_features:
-                    return arr
+                    return arr, True
             else:
                 if len(arr.shape) == 2 and arr.shape[1] == n_features:
-                    return arr
+                    return arr, True
         except Exception:
             pass
     if seq_len is not None:
-        return np.random.rand(100, seq_len, n_features).astype(np.float32)
-    return np.random.rand(100, n_features).astype(np.float32)
+        return np.random.rand(100, seq_len, n_features).astype(np.float32), False
+    return np.random.rand(100, n_features).astype(np.float32), False
 
 
 def export_and_verify_onnx(
@@ -141,7 +141,7 @@ def _export_xgboost(
         f.write(onnx_model.SerializeToString())
 
     # Parity Check
-    dummy_input = _get_validation_samples(save_dir, n_features)
+    dummy_input, real_samples_used = _get_validation_samples(save_dir, n_features)
     py_pred = model.predict_proba(dummy_input)[:, 1]
 
     ort_sess = ort.InferenceSession(onnx_path)
@@ -156,7 +156,7 @@ def _export_xgboost(
     else:
         onnx_pred = np.array([list(d.values())[1] for d in probs_output])
 
-    return _check_parity(py_pred, onnx_pred, save_dir, tolerance)
+    return _check_parity(py_pred, onnx_pred, save_dir, tolerance, real_samples_used)
 
 
 def _export_catboost(
@@ -166,7 +166,7 @@ def _export_catboost(
     model.save_model(onnx_path, format="onnx")
 
     n_features = model.n_features_in_
-    dummy_input = _get_validation_samples(save_dir, n_features)
+    dummy_input, real_samples_used = _get_validation_samples(save_dir, n_features)
     py_pred = model.predict_proba(dummy_input)[:, 1]
 
     ort_sess = ort.InferenceSession(onnx_path)
@@ -176,7 +176,7 @@ def _export_catboost(
     probs_output = onnx_outputs[1]
     onnx_pred = probs_output[:, 1]
 
-    return _check_parity(py_pred, onnx_pred, save_dir, tolerance)
+    return _check_parity(py_pred, onnx_pred, save_dir, tolerance, real_samples_used)
 
 
 def _export_lightgbm(
@@ -214,7 +214,7 @@ def _export_lightgbm(
         f.write(onnx_model.SerializeToString())
 
     # Parity Check
-    dummy_input = _get_validation_samples(save_dir, n_features)
+    dummy_input, real_samples_used = _get_validation_samples(save_dir, n_features)
     py_pred = model.predict_proba(dummy_input)[:, 1]
 
     ort_sess = ort.InferenceSession(onnx_path)
@@ -228,7 +228,7 @@ def _export_lightgbm(
     else:
         onnx_pred = np.array([list(d.values())[1] for d in probs_output])
 
-    return _check_parity(py_pred, onnx_pred, save_dir, tolerance)
+    return _check_parity(py_pred, onnx_pred, save_dir, tolerance, real_samples_used)
 
 
 
@@ -275,7 +275,7 @@ def _export_sequence(
     if model is None:
         return "failed", "unchecked", "Could not load any known PyTorch model architecture"
 
-    dummy_input = _get_validation_samples(save_dir, n_features, seq_len=seq_len)
+    dummy_input, real_samples_used = _get_validation_samples(save_dir, n_features, seq_len=seq_len)
     dummy_input_torch = torch.tensor(dummy_input, dtype=torch.float32)
 
     torch.onnx.export(
@@ -295,7 +295,7 @@ def _export_sequence(
     ort_sess = ort.InferenceSession(onnx_path)
     onnx_pred = ort_sess.run(None, {"input": dummy_input})[0].flatten()
 
-    return _check_parity(py_pred, onnx_pred, save_dir, tolerance)
+    return _check_parity(py_pred, onnx_pred, save_dir, tolerance, real_samples_used)
 
 
 def _check_parity(
@@ -303,12 +303,15 @@ def _check_parity(
     onnx_pred: np.ndarray,
     save_dir: str,
     tolerance: float,
+    real_samples_used: bool = True,
 ) -> Tuple[str, str, Optional[str]]:
     """Compare Python and ONNX predictions and write the parity report."""
     diff = np.abs(py_pred - onnx_pred)
     max_diff = float(np.max(diff))
     mean_diff = float(np.mean(diff))
-    parity_passed = max_diff < tolerance
+    
+    # Force failure if real validation samples are missing
+    parity_passed = (max_diff < tolerance) if real_samples_used else False
 
     report = {
         "sample_count": len(py_pred),
@@ -316,18 +319,28 @@ def _check_parity(
         "mean_abs_delta": mean_diff,
         "passed": parity_passed,
         "tolerance": tolerance,
+        "real_validation_samples": real_samples_used,
         # backward compatibility:
         "max_absolute_difference": max_diff,
         "parity_passed": parity_passed,
         "onnx_output_sample": [float(x) for x in onnx_pred[:5]],
         "py_output_sample": [float(x) for x in py_pred[:5]],
     }
+    if not real_samples_used:
+        report["warning"] = "Missing real validation samples. Parity checked with random dummy data. Mark as weak/failed."
+        
     with open(os.path.join(save_dir, "onnx_parity_report.json"), "w") as f:
         json.dump(report, f, indent=2)
 
     if parity_passed:
         return "success", "success", None
     else:
+        if not real_samples_used:
+            return (
+                "success",
+                "failed",
+                "ONNX parity check failed/weak: real validation samples missing."
+            )
         return (
             "success",
             "failed",

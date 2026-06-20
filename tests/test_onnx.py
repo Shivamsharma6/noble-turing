@@ -125,3 +125,39 @@ def test_onnx_missing_metadata(tmp_path):
 
 
 import json
+
+def test_onnx_parity_missing_validation_samples(tmp_path):
+    from app.models_lab.onnx_utils import export_and_verify_onnx
+    import json
+    
+    model_id = "m_missing_val_samples"
+    save_dir = os.path.join(str(tmp_path), model_id)
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # create dummy metadata with no validation_samples.npy
+    with open(os.path.join(save_dir, "metadata.json"), "w") as f:
+        json.dump({
+            "model_id": model_id,
+            "model_type": "tabular",
+            "model_family": "xgboost",
+            "feature_schema_hash": "feat_h",
+            "feature_columns": ["f0"]
+        }, f)
+        
+    # Create dummy model
+    import pickle
+    import xgboost as xgb
+    import numpy as np
+    m = xgb.XGBClassifier()
+    m.fit(np.random.rand(10, 1), np.array([0,1,0,1,0,1,0,1,0,1]))
+    with open(os.path.join(save_dir, "model.pkl"), "wb") as f:
+        pickle.dump(m, f)
+        
+    export_status, parity_status, error_msg = export_and_verify_onnx(model_id, str(tmp_path))
+    assert export_status == "success"
+    assert parity_status == "failed"
+    
+    with open(os.path.join(save_dir, "onnx_parity_report.json"), "r") as f:
+        report = json.load(f)
+    assert report["passed"] is False
+    assert report["real_validation_samples"] is False
