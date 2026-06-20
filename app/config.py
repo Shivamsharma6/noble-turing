@@ -1,3 +1,10 @@
+import os
+# Prevent OpenMP/MKL multi-threading deadlocks between PyTorch and XGBoost on macOS
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+
 from functools import lru_cache
 from pydantic_settings import BaseSettings
 
