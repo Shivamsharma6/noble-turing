@@ -36,6 +36,21 @@ def init_db(db_path: str):
             error_message TEXT
         );
         """)
+        
+        # Safety audit records tracking table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS audit_records (
+            request_id TEXT PRIMARY KEY,
+            endpoint TEXT,
+            model_id TEXT,
+            input_hash TEXT,
+            output_hash TEXT,
+            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            completed_at TIMESTAMP,
+            status TEXT,
+            error_message TEXT
+        );
+        """)
         conn.commit()
     finally:
         conn.close()
