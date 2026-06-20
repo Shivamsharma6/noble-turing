@@ -11,6 +11,8 @@ from sklearn.metrics import roc_auc_score, log_loss, f1_score
 class Simple1DCNN(nn.Module):
     def __init__(self, sequence_length: int, num_features: int):
         super().__init__()
+        if sequence_length < 2:
+            raise ValueError("sequence_length must be at least 2.")
         self.conv1 = nn.Conv1d(in_channels=num_features, out_channels=8, kernel_size=3, padding=1)
         self.pool = nn.MaxPool1d(2)
         # Sequence length division after maxpool 1d of kernel size 2 and stride 2
@@ -31,6 +33,9 @@ def train_sequence_pipeline(model_id: str, config: Dict[str, Any], models_dir: s
     label_col = config["label_definition"]
     seq_len = config.get("sequence_length", 10)
     num_features = config.get("num_features", 2)
+    
+    if seq_len < 2:
+        raise ValueError("sequence_length must be at least 2 to prevent shape errors in the pooling layer.")
     
     df = pd.read_csv(dataset_uri)
     

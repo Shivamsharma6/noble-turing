@@ -2,8 +2,12 @@ import os
 import uuid
 import json
 import sqlite3
+import logging
 from typing import List, Dict, Any
 from concurrent.futures import ThreadPoolExecutor
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("macbook_lab")
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, File, UploadFile, Form
 from fastapi.responses import FileResponse
 from app.auth import verify_api_key
@@ -46,6 +50,7 @@ def run_async_tabular_training(model_id: str, config: Dict[str, Any], db_path: s
             WHERE model_id = ?
         """, (json.dumps(metrics), model_id))
     except Exception as e:
+        logger.error(f"Error in async tabular training for model {model_id}: {e}", exc_info=True)
         cursor.execute("""
             UPDATE jobs 
             SET status = 'failed', completed_at = CURRENT_TIMESTAMP, error_message = ? 
@@ -76,6 +81,7 @@ def run_async_sequence_training(model_id: str, config: Dict[str, Any], db_path: 
             WHERE model_id = ?
         """, (json.dumps(metrics), model_id))
     except Exception as e:
+        logger.error(f"Error in async sequence training for model {model_id}: {e}", exc_info=True)
         cursor.execute("""
             UPDATE jobs 
             SET status = 'failed', completed_at = CURRENT_TIMESTAMP, error_message = ? 
