@@ -70,11 +70,15 @@ def test_finbert_cache_hit(tmp_path):
     # First call: compute and cache
     results1 = annotate_news_batch(news_items, db_path, use_mock=True)
     assert results1[0]["model_id"] == "ProsusAI/finbert"
+    assert results1[0]["cache_hit"] is False
+    assert "title" not in results1[0]  # Verify title is not in output
 
     # Second call: should hit cache
     results2 = annotate_news_batch(news_items, db_path, use_mock=True)
     assert results2[0]["model_id"] == "cached"
+    assert results2[0]["cache_hit"] is True
     assert results2[0]["sentiment_label"] == results1[0]["sentiment_label"]
+    assert "title" not in results2[0]
 
 
 def test_finbert_dedupe_hash_order_preserved(tmp_path):

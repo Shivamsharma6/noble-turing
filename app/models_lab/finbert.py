@@ -57,12 +57,13 @@ def annotate_news_batch(
                         "positive_score": row["positive_score"],
                         "negative_score": row["negative_score"],
                         "neutral_score": row["neutral_score"],
+                        "cache_hit": True,
                         "annotated_at": datetime.now(timezone.utc).isoformat(),
                     }
                 )
             else:
                 results.append(None)
-                to_compute.append(f"{item['title']}. {item['snippet']}")
+                to_compute.append(f"{item.get('title', '')}. {item.get('snippet', '')}")
                 to_compute_indices.append(idx)
 
         # Step 2: Run inference on misses
@@ -112,6 +113,7 @@ def annotate_news_batch(
                     "positive_score": positive_score,
                     "negative_score": negative_score,
                     "neutral_score": neutral_score,
+                    "cache_hit": False,
                     "annotated_at": now,
                 }
 
