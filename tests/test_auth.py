@@ -28,7 +28,7 @@ def test_auth_failure(monkeypatch):
 
 def test_auth_missing_header():
     response = client.get("/secure")
-    assert response.status_code == 403  # FastAPI raises 403 Forbidden by default for missing APIKeyHeader
+    assert response.status_code == 401  # FastAPI raises 401 for missing APIKeyHeader
 
 def test_verify_api_key_signature():
     import inspect
