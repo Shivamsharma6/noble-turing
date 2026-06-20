@@ -24,7 +24,7 @@ def test_settings_default_onnx_tolerance(monkeypatch):
     monkeypatch.delenv("DATABASE_PATH", raising=False)
     get_settings.cache_clear()
     settings = get_settings()
-    assert settings.onnx_parity_tolerance == 1e-3
+    assert settings.onnx_parity_tolerance == 0.0001
 
 
 def test_settings_no_api_key_raises(monkeypatch):
