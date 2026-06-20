@@ -134,6 +134,28 @@ def test_root_scoring_endpoints_404(monkeypatch):
     assert response2.status_code == 404
 
 
+def test_health_check_unauthenticated():
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json()["service"] == "noble-turing"
+    assert "commit" in response.json()
+
+def test_readiness_authenticated():
+    response = client.get("/api/v1/readiness", headers={"X-API-Key": "test-token"})
+    assert response.status_code == 200
+    assert "api_key_auth_enabled" in response.json()
+    assert response.json()["api_key_auth_enabled"] is True
+
+def test_capabilities_authenticated():
+    response = client.get("/api/v1/capabilities", headers={"X-API-Key": "test-token"})
+    assert response.status_code == 200
+    assert "supported_endpoints" in response.json()
+    assert "/health" in response.json()["supported_endpoints"]
+
+def test_export_package_unauthenticated_blocked():
+    response = client.post("/api/v1/export_artha_package")
+    assert response.status_code == 401
+
 @pytest.fixture(scope="session", autouse=True)
 def cleanup():
     yield

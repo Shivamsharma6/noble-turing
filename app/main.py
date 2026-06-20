@@ -3,14 +3,17 @@ import uuid
 import json
 import sqlite3
 import logging
+import asyncio
 from contextlib import asynccontextmanager
 from typing import List, Dict, Any
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+from functools import wraps
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("macbook_lab")
 
-from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, File, UploadFile, Form
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, File, UploadFile, Form, Request
 from fastapi.responses import FileResponse, JSONResponse
 from app.auth import verify_api_key
 from app.config import get_settings
@@ -20,16 +23,22 @@ from app.models_lab.tabular import train_tabular_pipeline
 from app.models_lab.sequence import train_sequence_pipeline
 from app.models_lab.onnx_utils import export_and_verify_onnx
 
+# Import new Artha compatible modules
+from app.audit import log_audit_record, redact_secrets
+from app.health import get_health_status, get_readiness, get_capabilities
+from app.scoring.daily_mover import score_daily_mover
+from app.scoring.time_series import score_time_series
+from app.packaging.artha_package import export_artha_package
+
 # ---------------------------------------------------------------------------
 # Lifespan: create and shut down the training thread pool
 # ---------------------------------------------------------------------------
 
 training_pool = ThreadPoolExecutor(max_workers=2)
-
+settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    settings = get_settings()
     init_db(settings.database_path)
     os.makedirs(settings.models_dir, exist_ok=True)
     os.makedirs(settings.data_dir, exist_ok=True)
@@ -38,11 +47,9 @@ async def lifespan(app: FastAPI):
     if training_pool is not None:
         training_pool.shutdown(wait=True)
 
-
 app = FastAPI(title="MacBook Model Lab Service", lifespan=lifespan)
-settings = get_settings()
 
-
+# Helper function to update training job status
 def _update_job_status(
     cursor: sqlite3.Cursor,
     model_id: str,
@@ -50,7 +57,6 @@ def _update_job_status(
     metrics: Dict[str, Any],
     error_message: str | None = None,
 ):
-    """Persist job completion (success or failure) to the database."""
     cursor.execute(
         """
         UPDATE jobs
@@ -61,7 +67,94 @@ def _update_job_status(
         (status, json.dumps(metrics), error_message, model_id),
     )
 
+# ---------------------------------------------------------------------------
+# Safety Audit Logging Decorator
+# ---------------------------------------------------------------------------
+def audit_endpoint(endpoint_name: str):
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            request_id = str(uuid.uuid4())
+            started_at = datetime.now(timezone.utc)
+            
+            # Find request
+            request = kwargs.get("request") or next((a for a in args if isinstance(a, Request)), None)
+            
+            input_data = {}
+            model_id = None
+            
+            if request:
+                try:
+                    # Read body for JSON payload
+                    body_bytes = await request.body()
+                    if body_bytes:
+                        input_data = json.loads(body_bytes)
+                        model_id = input_data.get("model_id")
+                except Exception:
+                    pass
+                
+                input_data = {
+                    "body": input_data,
+                    "query_params": dict(request.query_params),
+                    "headers": dict(request.headers)
+                }
+            
+            if "config_str" in kwargs and kwargs["config_str"]:
+                try:
+                    parsed = json.loads(kwargs["config_str"])
+                    input_data["config_str"] = parsed
+                    if not model_id:
+                        model_id = parsed.get("model_id")
+                except Exception:
+                    input_data["config_str"] = kwargs["config_str"]
+            if "model_id" in kwargs:
+                model_id = kwargs["model_id"]
+                input_data["model_id"] = model_id
+                
+            try:
+                if asyncio.iscoroutinefunction(func):
+                    result = await func(*args, **kwargs)
+                else:
+                    result = func(*args, **kwargs)
+                
+                # Retrieve JSON representation of Response if applicable
+                output_data = result
+                if isinstance(result, JSONResponse):
+                    try:
+                        output_data = json.loads(result.body.decode("utf-8"))
+                    except Exception:
+                        pass
+                
+                log_audit_record(
+                    db_path=settings.database_path,
+                    request_id=request_id,
+                    endpoint=endpoint_name,
+                    model_id=model_id,
+                    input_data=input_data,
+                    output_data=output_data,
+                    status="completed",
+                    started_at=started_at
+                )
+                return result
+            except Exception as e:
+                log_audit_record(
+                    db_path=settings.database_path,
+                    request_id=request_id,
+                    endpoint=endpoint_name,
+                    model_id=model_id,
+                    input_data=input_data,
+                    output_data=None,
+                    status="failed",
+                    error_message=str(e),
+                    started_at=started_at
+                )
+                raise e
+        return wrapper
+    return decorator
 
+# ---------------------------------------------------------------------------
+# Background Training Workers
+# ---------------------------------------------------------------------------
 def _run_async_tabular_training(
     model_id: str, config: Dict[str, Any], db_path: str, models_dir: str
 ):
@@ -97,7 +190,6 @@ def _run_async_tabular_training(
     finally:
         conn.commit()
         conn.close()
-
 
 def _run_async_sequence_training(
     model_id: str, config: Dict[str, Any], db_path: str, models_dir: str
@@ -135,223 +227,44 @@ def _run_async_sequence_training(
         conn.commit()
         conn.close()
 
-
-def _run_async_scoring(
-    model_id: str, config: Dict[str, Any], db_path: str, models_dir: str
-):
-    """Score candidates using a trained model."""
-    conn = get_db_connection(db_path)
-    cursor = conn.cursor()
-    try:
-        cursor.execute(
-            "UPDATE jobs SET status = 'scoring' WHERE model_id = ?", (model_id,)
-        )
-        conn.commit()
-
-        scoring_results = score_candidates(model_id, config, models_dir)
-
-        _update_job_status(cursor, model_id, "completed", scoring_results)
-    except Exception as e:
-        logger.error(
-            f"Error in async scoring for model {model_id}: {e}",
-            exc_info=True,
-        )
-        _update_job_status(cursor, model_id, "failed", {}, str(e))
-    finally:
-        conn.commit()
-        conn.close()
-
-
-# ---------------------------------------------------------------------------
-# Scoring helpers (called from background workers)
-# ---------------------------------------------------------------------------
-
-def score_candidates(
-    model_id: str, config: Dict[str, Any], models_dir: str
-) -> Dict[str, Any]:
-    """Score candidate rows using a trained model.
-
-    Supports both tabular and sequence models.
-    """
-    save_dir = os.path.join(models_dir, model_id)
-    metadata_path = os.path.join(save_dir, "metadata.json")
-
-    if not os.path.exists(metadata_path):
-        raise FileNotFoundError(f"Model {model_id} not found")
-
-    with open(metadata_path, "r") as f:
-        metadata = json.load(f)
-
-    model_type = metadata["model_type"]
-    candidate_rows = config.get("candidate_rows", [])
-
-    if model_type == "tabular":
-        return _score_tabular(model_id, save_dir, metadata, candidate_rows)
-    elif model_type == "sequence":
-        return _score_sequence(model_id, save_dir, metadata, candidate_rows)
-    else:
-        raise ValueError(f"Unsupported model_type for scoring: {model_type}")
-
-
-def _score_tabular(
-    model_id: str,
-    save_dir: str,
-    metadata: Dict[str, Any],
-    candidate_rows: List[Dict[str, Any]],
-) -> Dict[str, Any]:
-    import pickle
-    import numpy as np
-
-    with open(os.path.join(save_dir, "model.pkl"), "rb") as f:
-        model = pickle.load(f)
-
-    # Load threshold
-    thresholds_path = os.path.join(save_dir, "thresholds.json")
-    threshold = 0.5
-    if os.path.exists(thresholds_path):
-        with open(thresholds_path, "r") as f:
-            threshold = json.load(f).get("threshold", 0.5)
-
-    # Build feature matrix from candidate rows
-    feature_names = list(getattr(model, "feature_names_in_", None) or [])
-    if not feature_names:
-        # Try to infer from metadata
-        feature_names = [f"f{i}" for i in range(len(candidate_rows[0].keys()) - 1)]
-
-    X_candidates = np.array(
-        [[row.get(fn, 0.0) for fn in feature_names] for row in candidate_rows],
-        dtype=np.float32,
-    )
-
-    probabilities = model.predict_proba(X_candidates)[:, 1].tolist()
-    predictions = (np.array(probabilities) >= threshold).astype(int).tolist()
-
-    return {
-        "model_id": model_id,
-        "model_family": metadata.get("model_family", "xgboost"),
-        "model_type": "tabular",
-        "threshold": threshold,
-        "predictions": [
-            {
-                "row_index": i,
-                "probability": float(prob),
-                "prediction": int(pred),
-            }
-            for i, (prob, pred) in enumerate(zip(probabilities, predictions))
-        ],
-    }
-
-
-def _score_sequence(
-    model_id: str,
-    save_dir: str,
-    metadata: Dict[str, Any],
-    candidate_rows: List[Dict[str, Any]],
-) -> Dict[str, Any]:
-    import torch
-    import numpy as np
-
-    seq_len = metadata["sequence_length"]
-    num_features = metadata["num_features"]
-
-    # Try all known architectures
-    from app.models_lab.sequence import (
-        Simple1DCNN,
-        MiniRocketFeatureExtractor,
-        InceptionTime,
-        TCN,
-        ResNetTS,
-    )
-
-    model_classes = [
-        ("Simple1DCNN", Simple1DCNN),
-        ("MiniRocketFeatureExtractor", MiniRocketFeatureExtractor),
-        ("InceptionTime", InceptionTime),
-        ("TCN", TCN),
-        ("ResNetTS", ResNetTS),
-    ]
-
-    model = None
-    for _, cls in model_classes:
-        try:
-            model = cls(seq_len, num_features)
-            model.load_state_dict(
-                torch.load(
-                    os.path.join(save_dir, "model.pt"), weights_only=True
-                ),
-            )
-            model.eval()
-            break
-        except (KeyError, RuntimeError, AttributeError):
-            model = None
-            continue
-
-    if model is None:
-        raise FileNotFoundError(
-            f"Could not load any known PyTorch model for {model_id}"
-        )
-
-    # Load threshold
-    thresholds_path = os.path.join(save_dir, "thresholds.json")
-    threshold = 0.5
-    if os.path.exists(thresholds_path):
-        with open(thresholds_path, "r") as f:
-            threshold = json.load(f).get("threshold", 0.5)
-
-    # Build candidate tensors
-    # candidate_rows is a list of dicts; each dict maps column names to values
-    # We need to reshape into (N, seq_len, num_features)
-    all_values = []
-    for row in candidate_rows:
-        vals = [row.get(f"t{t}_f{f}", 0.0) for t in range(seq_len) for f in range(num_features)]
-        all_values.append(vals)
-
-    X_candidates = np.array(all_values, dtype=np.float32).reshape(
-        -1, seq_len, num_features
-    )
-
-    with torch.no_grad():
-        probabilities = model(
-            torch.tensor(X_candidates, dtype=torch.float32)
-        ).numpy().flatten().tolist()
-
-    predictions = (np.array(probabilities) >= threshold).astype(int).tolist()
-
-    return {
-        "model_id": model_id,
-        "model_family": metadata.get("model_family", "pytorch_cnn"),
-        "model_type": "sequence",
-        "threshold": threshold,
-        "predictions": [
-            {
-                "row_index": i,
-                "probability": float(prob),
-                "prediction": int(pred),
-            }
-            for i, (prob, pred) in enumerate(zip(probabilities, predictions))
-        ],
-    }
-
-
 # ---------------------------------------------------------------------------
 # API Endpoints
 # ---------------------------------------------------------------------------
 
+@app.get("/health")
+def health_endpoint():
+    """Unauthenticated health status of the service."""
+    return get_health_status()
+
+@app.get("/api/v1/readiness", dependencies=[Depends(verify_api_key)])
+def readiness_endpoint():
+    """System configuration parameters and job queue status."""
+    return get_readiness(settings.database_path, settings.models_dir, settings.data_dir)
+
+@app.get("/api/v1/capabilities", dependencies=[Depends(verify_api_key)])
+def capabilities_endpoint():
+    """Supported model families and packaging layouts."""
+    return get_capabilities()
+
+@app.post("/annotate_news", dependencies=[Depends(verify_api_key)])
 @app.post("/api/v1/annotate_news", dependencies=[Depends(verify_api_key)])
-def annotate_news(news_items: List[Dict[str, Any]]):
-    # Auto-mock in test databases to prevent downloading model during test runs
+@audit_endpoint("/api/v1/annotate_news")
+async def annotate_news(request: Request):
+    news_items = await request.json()
     use_mock = "test" in settings.database_path
     return annotate_news_batch(news_items, settings.database_path, use_mock=use_mock)
 
-
+@app.post("/train_tabular_model", dependencies=[Depends(verify_api_key)])
 @app.post("/api/v1/train_tabular_model", dependencies=[Depends(verify_api_key)])
-def train_tabular_model(
-    config_str: str = Form(...), file: UploadFile = File(None)
+@audit_endpoint("/api/v1/train_tabular_model")
+async def train_tabular_model(
+    request: Request,
+    config_str: str = Form(...), 
+    file: UploadFile = File(None)
 ):
     config = json.loads(config_str)
     model_id = str(uuid.uuid4())
 
-    # Handle multipart dataset upload
     if file:
         save_path = os.path.join(settings.data_dir, f"{model_id}_{file.filename}")
         with open(save_path, "wb") as buffer:
@@ -382,15 +295,17 @@ def train_tabular_model(
 
     return {"model_id": model_id, "status": "pending", "message": "Job submitted."}
 
-
+@app.post("/train_time_series_model", dependencies=[Depends(verify_api_key)])
 @app.post("/api/v1/train_time_series_model", dependencies=[Depends(verify_api_key)])
-def train_time_series_model(
-    config_str: str = Form(...), file: UploadFile = File(None)
+@audit_endpoint("/api/v1/train_time_series_model")
+async def train_time_series_model(
+    request: Request,
+    config_str: str = Form(...), 
+    file: UploadFile = File(None)
 ):
     config = json.loads(config_str)
     model_id = str(uuid.uuid4())
 
-    # Handle multipart dataset upload
     if file:
         save_path = os.path.join(settings.data_dir, f"{model_id}_{file.filename}")
         with open(save_path, "wb") as buffer:
@@ -421,155 +336,91 @@ def train_time_series_model(
 
     return {"model_id": model_id, "status": "pending", "message": "Job submitted."}
 
+# ---------------------------------------------------------------------------
+# Synchronous Scoring Endpoints
+# ---------------------------------------------------------------------------
 
-@app.post(
-    "/score_daily_mover_candidates",
-    dependencies=[Depends(verify_api_key)],
-)
-@app.post(
-    "/api/v1/score_daily_mover_candidates",
-    dependencies=[Depends(verify_api_key)],
-)
-def score_daily_mover_candidates(
-    config_str: str = Form(...),
+@app.post("/score_daily_mover_candidates", dependencies=[Depends(verify_api_key)])
+@app.post("/api/v1/score_daily_mover_candidates", dependencies=[Depends(verify_api_key)])
+@audit_endpoint("/api/v1/score_daily_mover_candidates")
+async def score_daily_mover_candidates_endpoint(
+    request: Request,
+    config_str: str = Form(None)
 ):
-    """Score daily mover candidates using a trained tabular model."""
-    config = json.loads(config_str)
-    model_id = config.get("model_id")
+    # Support form parameter config_str or JSON body
+    payload = {}
+    if config_str:
+        try:
+            payload = json.loads(config_str)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid config_str JSON: {e}")
+    else:
+        try:
+            payload = await request.json()
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid JSON body: {e}")
 
+    model_id = payload.get("model_id")
     if not model_id:
-        raise HTTPException(
-            status_code=400, detail="model_id is required in config"
+        return JSONResponse(
+            status_code=404,
+            content={"status": "blocked", "errors": ["model_missing"], "scores": []}
         )
 
-    # Validate model exists and schema hash match
-    save_dir = os.path.join(settings.models_dir, model_id)
-    metadata_path = os.path.join(save_dir, "metadata.json")
-    if not os.path.exists(metadata_path):
-        raise HTTPException(
-            status_code=404, detail=f"Model {model_id} not found"
-        )
+    res = score_daily_mover(model_id, settings.database_path, settings.models_dir, payload)
+    
+    if res["status"] == "blocked":
+        status_code = 404 if "model_missing" in res["errors"] else 400
+        return JSONResponse(status_code=status_code, content=res)
+        
+    return res
 
-    with open(metadata_path, "r") as f:
-        metadata = json.load(f)
-    requested_schema = config.get("feature_schema_hash")
-    if requested_schema and metadata.get("feature_schema_hash") != requested_schema:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Schema hash mismatch: requested {requested_schema}, "
-                f"model has {metadata.get('feature_schema_hash')}"
-            ),
-        )
-
-    scoring_model_id = str(uuid.uuid4())
-
-    conn = get_db_connection(settings.database_path)
-    cursor = conn.cursor()
-    try:
-        cursor.execute(
-            """
-            INSERT INTO jobs (model_id, status, model_family, model_type)
-            VALUES (?, 'pending', ?, 'tabular')
-        """,
-            (scoring_model_id, "scoring"),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-    training_pool.submit(
-        _run_async_scoring,
-        scoring_model_id,
-        config,
-        settings.database_path,
-        settings.models_dir,
-    )
-
-    return {
-        "model_id": scoring_model_id,
-        "status": "pending",
-        "message": "Scoring job submitted.",
-    }
-
-
-@app.post(
-    "/score_time_series_candidates",
-    dependencies=[Depends(verify_api_key)],
-)
-@app.post(
-    "/api/v1/score_time_series_candidates",
-    dependencies=[Depends(verify_api_key)],
-)
-def score_time_series_candidates(
-    config_str: str = Form(...),
+@app.post("/score_time_series_candidates", dependencies=[Depends(verify_api_key)])
+@app.post("/api/v1/score_time_series_candidates", dependencies=[Depends(verify_api_key)])
+@audit_endpoint("/api/v1/score_time_series_candidates")
+async def score_time_series_candidates_endpoint(
+    request: Request,
+    config_str: str = Form(None)
 ):
-    """Score time-series candidates using a trained sequence model."""
-    config = json.loads(config_str)
-    model_id = config.get("model_id")
+    # Support form parameter config_str or JSON body
+    payload = {}
+    if config_str:
+        try:
+            payload = json.loads(config_str)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid config_str JSON: {e}")
+    else:
+        try:
+            payload = await request.json()
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid JSON body: {e}")
 
+    model_id = payload.get("model_id")
     if not model_id:
-        raise HTTPException(
-            status_code=400, detail="model_id is required in config"
+        return JSONResponse(
+            status_code=404,
+            content={"status": "blocked", "errors": ["sequence_model_missing"], "scores": []}
         )
 
-    # Validate model exists and schema hash match
-    save_dir = os.path.join(settings.models_dir, model_id)
-    metadata_path = os.path.join(save_dir, "metadata.json")
-    if not os.path.exists(metadata_path):
-        raise HTTPException(
-            status_code=404, detail=f"Model {model_id} not found"
-        )
+    res = score_time_series(model_id, settings.models_dir, payload)
+    
+    if res["status"] == "blocked":
+        status_code = 404 if "sequence_model_missing" in res["errors"] else 400
+        return JSONResponse(status_code=status_code, content=res)
+        
+    return res
 
-    with open(metadata_path, "r") as f:
-        metadata = json.load(f)
-    requested_schema = config.get("sequence_schema_hash")
-    if requested_schema and metadata.get("sequence_schema_hash") != requested_schema:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Schema hash mismatch: requested {requested_schema}, "
-                f"model has {metadata.get('sequence_schema_hash')}"
-            ),
-        )
+# ---------------------------------------------------------------------------
+# ONNX Mutators & Parity
+# ---------------------------------------------------------------------------
 
-    scoring_model_id = str(uuid.uuid4())
-
-    conn = get_db_connection(settings.database_path)
-    cursor = conn.cursor()
-    try:
-        cursor.execute(
-            """
-            INSERT INTO jobs (model_id, status, model_family, model_type)
-            VALUES (?, 'pending', ?, 'sequence')
-        """,
-            (scoring_model_id, "scoring"),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-    training_pool.submit(
-        _run_async_scoring,
-        scoring_model_id,
-        config,
-        settings.database_path,
-        settings.models_dir,
-    )
-
-    return {
-        "model_id": scoring_model_id,
-        "status": "pending",
-        "message": "Scoring job submitted.",
-    }
-
-
-@app.post(
-    "/api/v1/export_onnx",
-    dependencies=[Depends(verify_api_key)],
-)
-def export_onnx_endpoint(model_id: str = Form(...)):
-    """Manually trigger ONNX export and parity check for an existing model."""
+@app.post("/export_onnx", dependencies=[Depends(verify_api_key)])
+@app.post("/api/v1/export_onnx", dependencies=[Depends(verify_api_key)])
+@audit_endpoint("/api/v1/export_onnx")
+async def export_onnx_endpoint(
+    request: Request,
+    model_id: str = Form(...)
+):
     save_dir = os.path.join(settings.models_dir, model_id)
     metadata_path = os.path.join(save_dir, "metadata.json")
 
@@ -595,16 +446,45 @@ def export_onnx_endpoint(model_id: str = Form(...)):
         "error_message": error_msg,
     }
 
+@app.post("/validate_onnx_parity", dependencies=[Depends(verify_api_key)])
+@app.post("/api/v1/validate_onnx_parity", dependencies=[Depends(verify_api_key)])
+@audit_endpoint("/api/v1/validate_onnx_parity")
+async def validate_onnx_parity_endpoint(
+    request: Request,
+    model_id: str = Form(...)
+):
+    return await export_onnx_endpoint(request, model_id)
 
-@app.post(
-    "/api/v1/validate_onnx_parity",
-    dependencies=[Depends(verify_api_key)],
-)
-def validate_onnx_parity(model_id: str = Form(...)):
-    """Re-run ONNX parity check for an existing model."""
-    return export_onnx_endpoint(model_id)
+# ---------------------------------------------------------------------------
+# Artha Compatible Packages Export
+# ---------------------------------------------------------------------------
 
+@app.post("/export_artha_package", dependencies=[Depends(verify_api_key)])
+@app.post("/api/v1/export_artha_package", dependencies=[Depends(verify_api_key)])
+@audit_endpoint("/api/v1/export_artha_package")
+async def export_artha_package_endpoint(
+    request: Request,
+    model_id: str = Form(...),
+    package_type: str = Form(...)
+):
+    try:
+        exported = export_artha_package(model_id, package_type, settings.models_dir)
+        return {
+            "status": "success",
+            "model_id": model_id,
+            "package_type": package_type,
+            "exported_files": exported
+        }
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
+# ---------------------------------------------------------------------------
+# General Model Status and Downloader Aliases
+# ---------------------------------------------------------------------------
+
+@app.get("/model_status/{model_id}", dependencies=[Depends(verify_api_key)])
 @app.get("/api/v1/model_status/{model_id}", dependencies=[Depends(verify_api_key)])
 def get_model_status(model_id: str):
     conn = get_db_connection(settings.database_path)
@@ -631,10 +511,8 @@ def get_model_status(model_id: str):
         "metrics": metrics,
     }
 
-
-@app.get(
-    "/api/v1/model_artifact/{model_id}", dependencies=[Depends(verify_api_key)]
-)
+@app.get("/model_artifact/{model_id}", dependencies=[Depends(verify_api_key)])
+@app.get("/api/v1/model_artifact/{model_id}", dependencies=[Depends(verify_api_key)])
 def get_model_artifacts(model_id: str):
     save_dir = os.path.join(settings.models_dir, model_id)
     if not os.path.exists(save_dir):
@@ -642,11 +520,8 @@ def get_model_artifacts(model_id: str):
     files = os.listdir(save_dir)
     return {"model_id": model_id, "artifacts": files}
 
-
-@app.get(
-    "/api/v1/model_artifact/{model_id}/{filename}",
-    dependencies=[Depends(verify_api_key)],
-)
+@app.get("/model_artifact/{model_id}/{filename}", dependencies=[Depends(verify_api_key)])
+@app.get("/api/v1/model_artifact/{model_id}/{filename}", dependencies=[Depends(verify_api_key)])
 def download_model_artifact(model_id: str, filename: str):
     file_path = os.path.join(settings.models_dir, model_id, filename)
     if not os.path.exists(file_path):
