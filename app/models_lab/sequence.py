@@ -480,7 +480,19 @@ def train_sequence_pipeline(
 
     # Save threshold, feature importance and calibration
     with open(os.path.join(save_dir, "thresholds.json"), "w") as f:
-        json.dump({"threshold": threshold}, f, indent=2)
+        json.dump({
+            "threshold": threshold,
+            "tabular_score": threshold,
+            "time_series_score": threshold,
+            "final_score": threshold,
+            "scoring_formula": "1.0 * time_series_score",
+            "weights": {
+                "tabular_score": 0.0,
+                "news_score": 0.0,
+                "time_series_score": 1.0
+            },
+            "threshold_source": "thresholds.json"
+        }, f, indent=2)
     with open(os.path.join(save_dir, "feature_importance.json"), "w") as f:
         json.dump({}, f, indent=2)
     with open(os.path.join(save_dir, "calibration.json"), "w") as f:

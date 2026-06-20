@@ -268,7 +268,19 @@ def train_tabular_pipeline(
 
     # Save threshold and feature importance
     with open(os.path.join(save_dir, "thresholds.json"), "w") as f:
-        json.dump({"threshold": threshold}, f, indent=2)
+        json.dump({
+            "threshold": threshold,
+            "tabular_score": threshold,
+            "time_series_score": threshold,
+            "final_score": threshold,
+            "scoring_formula": "0.9 * tabular_score + 0.1 * news_score",
+            "weights": {
+                "tabular_score": 0.9,
+                "news_score": 0.1,
+                "time_series_score": 0.0
+            },
+            "threshold_source": "thresholds.json"
+        }, f, indent=2)
     with open(
         os.path.join(save_dir, "feature_importance.json"), "w"
     ) as f:

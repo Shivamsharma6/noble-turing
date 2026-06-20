@@ -1,5 +1,6 @@
 import os
 import shutil
+import json
 import pandas as pd
 import numpy as np
 import pytest
@@ -40,7 +41,14 @@ def test_tabular_training_flow(tmp_path):
     assert "blockers" in metrics
     assert os.path.exists(os.path.join(model_dir, "m1", "model.pkl"))
     assert os.path.exists(os.path.join(model_dir, "m1", "metadata.json"))
-    assert os.path.exists(os.path.join(model_dir, "m1", "thresholds.json"))
+    thresh_file = os.path.join(model_dir, "m1", "thresholds.json")
+    assert os.path.exists(thresh_file)
+    with open(thresh_file, "r") as f:
+        thresh = json.load(f)
+    assert thresh["tabular_score"] == thresh["threshold"]
+    assert thresh["time_series_score"] == thresh["threshold"]
+    assert thresh["final_score"] == thresh["threshold"]
+    assert thresh["scoring_formula"] == "0.9 * tabular_score + 0.1 * news_score"
     assert os.path.exists(
         os.path.join(model_dir, "m1", "feature_importance.json")
     )

@@ -1,5 +1,6 @@
 import os
 import shutil
+import json
 import numpy as np
 import pandas as pd
 import pytest
@@ -46,7 +47,14 @@ def test_sequence_training(tmp_path):
     assert "calibration_metrics" in metrics
     assert os.path.exists(os.path.join(model_dir, "m_seq1", "model.pt"))
     assert os.path.exists(os.path.join(model_dir, "m_seq1", "metadata.json"))
-    assert os.path.exists(os.path.join(model_dir, "m_seq1", "thresholds.json"))
+    thresh_file = os.path.join(model_dir, "m_seq1", "thresholds.json")
+    assert os.path.exists(thresh_file)
+    with open(thresh_file, "r") as f:
+        thresh = json.load(f)
+    assert thresh["tabular_score"] == thresh["threshold"]
+    assert thresh["time_series_score"] == thresh["threshold"]
+    assert thresh["final_score"] == thresh["threshold"]
+    assert thresh["scoring_formula"] == "1.0 * time_series_score"
     assert os.path.exists(
         os.path.join(model_dir, "m_seq1", "calibration.json")
     )
